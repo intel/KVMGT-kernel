@@ -1205,6 +1205,10 @@ struct drm_device {
 	int switch_power_state;
 
 	atomic_t unplugged; /* device has been unplugged or gone away */
+
+#ifdef CONFIG_I915_VGT
+	struct work_struct irqw;
+#endif
 };
 
 #define DRM_SWITCH_POWER_ON 0

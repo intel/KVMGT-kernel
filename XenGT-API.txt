@@ -1,0 +1,599 @@
+------------------- XenGT interface ------------------------
+Index
+1 XenGT udev Interface
+	1.1 Introduction to XenGT udev interface
+	1.2 XenGT udev rules
+		1.2.1 udev rules for monitor hotplug (in & out)
+		1.2.2 udev rules for enabling/disabling VGA mode (in progress)
+2 Access virtual GFX MMIO space of each VM (Virtual Machine)
+3 XenGT sysfs interface
+	3.1 XenGT sysfs layout
+	3.2 sysfs nodes
+		3.1.1 vgt instance creation
+		3.1.2 Display ownership switching
+		3.1.3 Foreground VM switching
+		3.1.4 Display-switch method setting (in progress)
+		3.1.5 Enable/disable rendering context switch (experimental)
+		3.1.6 Virtual events injection
+		3.1.7 Accessing physical MMIO registers
+		3.1.8 Remaining graphics memory size
+		      and the number of fence regs
+4 XenGT debugfs interface
+	4.1 Global statistics
+	4.2 Per VM statistics
+
+1 XenGT udev Interface
+
+1.1 Introduction to XenGT udev interface
+
+udev interface in XenGT is used to notify the userland daemon (like udevd)
+some events happened. After receiving such events, userland daemon uses defined
+rules or methods to take actions. In XenGT, userland daemon "udevd" is used for
+this purpose. Event matching and handling in udevd are based on rules
+defined in vgt.rules which should be placed under /etc/udev/rules.d.
+
+In vgt.rules, each line defines a matching and handling method of one uevent.
+Take a look at the line for handling uevent "CRT_INSERT" (CRT monitor hotplug-in
+):
+
+ACTION=="add", KERNEL=="control", ENV{CRT_INSERT}=="1", \
+RUN+="/bin/sh -c 'echo 0xf1 > /sys/kernel/vgt/control/virtual_event'"
+
+The field "KERNEL" indicates where this uevent comes out. The "ACTION" field can
+be "add","remove" or "change". Here use "add" to signify new CRT monitor "added"
+. The "ENV{CRT_INSERT}" field is to distinguish different uevents. All these
+three fields together are used to identify the specific uevent. The field "RUN"
+defines the method executed after the uevent matched. Here it echoes a number
+into a sysfs interface.
+
+1.2 XenGT udev rules
+
+1.2.1 udev rules for monitor hotplug (in & out)
+
+XenGT use a 32-bit vector (check section 3.1.6 for its format) to describe
+various hotplug uevents. The rules of handling CRT monitor insertion/removal
+are exemplified below:
+
+ACTION=="add", KERNEL=="control", ENV{CRT_INSERT}=="1", \
+RUN+="/bin/sh -c 'echo 0xf1 > /sys/kernel/vgt/control/virtual_event'"
+ACTION=="remove", KERNEL=="control", ENV{CRT_REMOVE}=="1", \
+RUN+="/bin/sh -c 'echo 0xf0 > /sys/kernel/vgt/control/virtual_event'"
+
+1.2.2 udev rules for enabling/disabling VGA mode (in progress)
+
+Another usage for udev in XenGT is to indicate VGA mode changes. The rules for
+such uevents are also divided into matching and handling parts. These two
+rules are listed below:
+
+ACTION=="add", KERNEL=="control", ENV{VGT_ENABLE_VGA}=="1", \
+RUN+="/bin/sh -c 'echo VM_$env{VMID}_enable_VGA_mode >> /tmp/vgt-log'"
+ACTION=="add", KERNEL=="control", ENV{VGT_ENABLE_VGA}=="0", \
+RUN+="/bin/sh -c 'echo VM_$env{VMID}_disable_VGA_mode >> /tmp/vgt-log'"
+
+People can change the field "RUN" to enable their own handling methods.
+Actually, this interface has not been finalized, especially for Windows.
+(The required Windows driver changes are still in progress.)
+
+2 Access virtual GFX MMIO space of each VM (Virtual Machine)
+
+XenGT exposes all per VM virtual registers via /dev filesystem:
+/dev/vgt_mmioX (here X is the VM ID).
+Userland C program can access the registers by mmap().
+
+Below is an example of how to use C program to read virtual
+MMIO of a vgt device.
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <errno.h>
+#include <fcntl.h>
+
+/* 2 MB MMIO space */
+#define MMIO_SPACE_SZ	(2*1024*1024)
+#define MAX_OFFSET	MMIO_SPACE_SZ
+void usage(void)
+{
+	printf("usage: ./a.out <vgt_mmio_dev> <mmio_offset>\n"
+	       "\n"
+	       "<vgt_mmio_dev>: /dev/vgt_mmioX (X is the VM ID)\n"
+	       "<mmio_offset>: GFX MMIO offset (hexadecimal), refer hw spec for the"
+	       "\n               offset of specific MMIO register\n");
+}
+
+int main (int argc, char **argv) {
+	unsigned int offset;
+	int dev_fd;
+	unsigned int *dev_space;
+
+	if (argc != 3) {
+		usage();
+		return -EINVAL;
+	}
+
+	dev_fd = open(argv[1], O_RDONLY);
+	if (dev_fd == -1) {
+		printf("ERROR: Invalid MMIO device %s\n",
+				argv[1]);
+		return errno;
+	}
+
+	dev_space = mmap(NULL, MMIO_SPACE_SZ, PROT_READ, MAP_SHARED,
+			dev_fd, 0);
+	if (dev_space == (void *)-1) {
+		printf("ERROR: failed to map %s\n", argv[1]);
+		return errno;
+	}
+
+	offset = strtol(argv[2], NULL, 16);
+	if ((offset < MAX_OFFSET) && ((offset & 0x3) == 0)) {
+		printf("%08x\n", dev_space[offset/4]);
+	} else {
+		printf("ERROR: Invalid MMIO offset(%08x)\n", offset);
+		return -EINVAL;
+	}
+
+	/* unmap */
+	if (munmap(dev_space, MMIO_SPACE_SZ) == -1) {
+		printf("ERROR: failed to munmap MMIO device\n");
+		return errno;
+	}
+	/* close */
+	close(dev_fd);
+
+	return 0;
+}
+
+
+3 XenGT sysfs interface
+
+3.1 XenGT sysfs layout
+
+XenGT sysfs interfaces are located under /sys/kernel/vgt, the sub-directory
+"control" contains all the necessary switches for different purposes. After
+a VM is created, a new sub-directory "vmX" ("X" is the VM ID) will be
+created under /sys/kernel/vgt. This "vmX" includes the VM's
+graphics memory information. Detailed information for each entry(a.k.a node)
+is listed below.
+
+In below examples all accesses to these interfaces are via bash command 'echo'
+or 'cat'. This is a quick and easy way to get/control things. But when these
+operations fails, it is impossible to get respective error code by this way.
+
+When accessing sysfs entries, people should use library functions like read()
+or write().
+On success, the returned value of read() or write() indicates how many bytes
+have been transferred.
+On error, the returned value is -1 and the global 'errno' will be set
+appropriately -- this is the only way to figure out what kind of error occurs.
+
+3.2 sysfs nodes
+
+3.1.1 vgt instance creation
+PATH:		/sys/kernel/vgt/control/create_vgt_instance
+
+SYNOPSIS:	echo <vm_id> <low_gm_sz> <high_gm_sz> <fence_sz> <vgt_primary> \
+		> /sys/kernel/vgt/control/create_vgt_instance
+
+		echo <vm_id> <low_gm_sz> <high_gm_sz> <fence_sz>	\
+		> /sys/kernel/vgt/control/create_vgt_instance
+
+		echo -<vm_id>  >  \
+		/sys/kernel/vgt/control/create_vgt_instance
+
+DESCRIPTION:	It is used by QEMU to create a vgt instance when a new VM is
+		booting up. QEMU can also destroy a vgt instance by writing a
+		negative vm_id.	When QEMU uses this interface, actually it
+		uses the write() syscall, instead of "echo".
+PARAMETERS:
+vm_id		The new VM's ID. A valid value should be greater than 0.
+low_gm_sz	The size of CPU visible graphics memory allocated to this VM,
+		in MB (The default is 64MB. NOTES: The Windows7 graphics driver
+		for HSW requires a minimum value of 128MB)
+high_gm_sz	The size of CPU invisible graphics memory allocated to this VM,
+                in MB	(The default is 448MB)
+fence_sz	The number of fence registers assigned to this VM
+		(The default is 4)
+
+RETURNED CODE:	The 'errno' will be set to following values.
+		EINVAL:		If the parameters provided can not be applied
+				because of illegal combination of these
+				parameters.
+		0:		Succeed.
+
+EXAMPLES:	Three typical usage for this interface:
+		1) Create vgt instance of VM1 with XenGT as the primary
+		   VGA card.
+		   echo 1 128 384 4 1 >  \
+		   /sys/kernel/vgt/control/create_vgt_instance
+		2) Create vgt instance of VM1 with XenGT as the secondary
+		   VGA card.
+		   echo 1 128 384 4 0 >  \
+	           /sys/kernel/vgt/control/create_vgt_instance
+		3) Destroy vgt instance of VM 1.
+		   echo -1 > /sys/kernel/vgt/control/create_vgt_instance
+
+3.1.2 Display ownership switching
+PATH:		/sys/kernel/vgt/control/display_owner
+
+SYNOPSIS:	echo <vm_id> > /sys/kernel/vgt/control/display_owner
+
+DESCRIPTION:	It is used to set the current display-owner. The VM which is
+		display owner could have the direct access of display related
+		MMIOs (not including the display surface and cursor related
+		MMIOs). Right now only Dom0 is allowed to be the display owner.
+
+PARAMETERS:
+vm_id		The VM ID of a running VM that's associated with a vgt instance
+
+RETURNED CODE:	The 'errno' will be set to following values.
+		EINVAL:		If the <vm_id> is not an integer or the <vm_id>
+				is the same with current display-owner's
+				vm_id.
+		ENODEV:		Can not find the proper VM
+		EBUSY:		A pending request of display switch has not
+				be done yet.
+		0:		Succeed.
+
+EXAMPLES:	Set VM 1 as the display owner.
+		echo 1 > /sys/kernel/vgt/control/display_owner
+		Set VM 0 (i.e., Dom0) as the display owner.
+		echo 0 > /sys/kernel/vgt/control/display_owner
+
+3.1.3 Foreground VM switching
+PATH:		/sys/kernel/vgt/control/foreground_vm
+
+SYNOPSIS:	echo <vm_id> > /sys/kernel/vgt/control/foreground_vm
+
+DESCRIPTION:	It is used to set the current VM that is visible on display.
+		Notice that the foreground_vm does not necessarily equal to
+		display_owner. A foreground VM can have direct access of
+		display surface and cursor related MMIOs, hence visible on
+		display. Other display related MMIOs will be fully virtualized
+		if it is not display owner.
+
+PARAMETERS:
+vm_id		The VM ID of a running VM that's associated with a vgt instance
+
+RETURNED CODE:	The 'errno' will be set to following values.
+		EINVAL:		If the <vm_id> is not an integer or the <vm_id>
+				is the same with current display-owner's
+				vm_id.
+		ENODEV:		Can not find the proper VM
+		EBUSY:		A pending request of the switch has not be
+				done yet.
+		0:		Succeed.
+
+EXAMPLES:	Set VM 1 as the foreground VM.
+		echo 1 > /sys/kernel/vgt/control/foreground_vm
+		Set VM 0 (i.e., Dom0) as the foreground VM.
+		echo 0 > /sys/kernel/vgt/control/foreground_vm
+
+3.1.4 Display-switch method setting (in progress)
+PATH:		/sys/kernel/vgt/control/display_switch_method
+
+SYNOPSIS:	echo <method> > /sys/kernel/vgt/control/display_switch_method
+
+DESCRIPTION:	In XenGT, there are two methods of display-switch: fast-path
+		and slow-path. The fast-path method is used to switch VMs that
+		have the same display mode settings (like resolution, rotation,
+		refresh rate, etc). Actually it only switches the base address
+		of surfaces. The slow-path method is used to switch VMs that
+		have various display mode settings -- it takes more time because
+		besides base addresses of surfaces, configures of other
+		display components are also switched during the slow-path
+		switch. This interface is used to set the display-switch method
+		dynamically. Currently on Haswell platform, only 'fast-path'
+		switch works.
+PARAMETERS:
+method		'0' indicates 'slow-path' switch.
+		'1' indicates 'fast-path' switch.
+
+RETURNED CODE:	The 'errno' will be set to following values.
+		EINVAL:		If the <method> is not an integer.
+		0:		Succeed.
+
+3.1.5 Enable/disable rendering context switch (experimental)
+PATH:		/sys/kernel/vgt/control/ctx_switch
+
+SYNOPSIS:	echo <render_switch> > /sys/kernel/vgt/control/ctx_switch
+
+DESCRIPTION:	It is used to enable/disable rendering context switch
+		dynamically. This feature was mainly used for debugging instead
+		of a formal feature.
+
+RETURNED CODE:	The 'errno' will be set to following values.
+		EINVAL:		If <render_switch> is not an integer.
+		0:		Succeed.
+PARAMETERS:
+render_switch	When it is non-zero, rendering context switch will be
+		enabled otherwise it will be disabled.
+
+3.1.6 Virtual events injection
+PATH:		/sys/kernel/vgt/control/virtual_event
+
+SYNOPSIS:	echo <vec> > /sys/kernel/vgt/control/virtual_event
+
+DESCRIPTION:	It is now mainly used to inject monitor hotplug events
+		to different VMs. When physical events happen, Dom0
+		will notify the userland daemon which will use this
+		interface when it decides to inject virtual events to
+		to selected VM(s).
+PARAMETERS:
+vec		This is a 32-bit vector to indicate which virtual event
+		will be sent to which VM.
+
+		The field definition:
+		bit 31 - bit 16	: Reserved;
+		bit 15 - bit 8	: VM id of receiver
+				  Maximum ID supported by hotplug is 254(0xfe)
+				  vmid 255(0xff) has special meaning to
+				  forward the virtual_event to all live VMs.
+		bit 7 - bit 4	: Reserved;
+		bit 3 - bit 1	: Port/monitor selection:
+			0	-	CRT
+			1	-	PORT_A
+			2	-	PORT_B
+			3	-	PORT_C
+			4	-	PORT_D
+		bit 0 - bit 0	: Direction.
+			0: pull out;
+			1: plug in;
+
+RETURNED CODE:	The 'errno' will be set to following values.
+		EINVAL:		If <vec> is not an integer or not in a valid
+				format.
+		0:		Succeed.
+
+EXAMPLES:	The vector for injecting the uevent "CRT_INSERT" to
+		all VMs will be expressed as 0x0f1 (241 in decimal)
+		So to notify all VMs this event, it can be done like:
+		echo  241 > /sys/kernel/vgt/control/virtual_event
+
+3.1.7 Accessing physical MMIO registers
+PATH:		/sys/kernel/vgt/control/igd_mmio
+
+DESCRIPTION:	This is used to read/write physical MMIO registers.
+		System calls like read()/write() can be used to access
+		this interface.
+
+RETURNED CODE:	The 'errno' will be set to following values
+		EINVAL:		The parameter passed to read()/write() is
+				illegal.
+		EIO:		Hypercall can't access the physical register.
+		0:		Succeed.
+
+3.1.8 Remaining graphics memory size,the number of fence regs
+PATH:		/sys/kernel/vgt/control/available_resources
+
+DESCRIPTION:	This entry shows remaining free CPU visible graphics memory size,
+                available CPU invisible graphics memory size and available
+		fence registers.It can be used to determine how many VMs with
+		VGT instance can still be created.
+		The output consists of 3 lines in hexadecimal and looks like this:
+		(Using "\" to represent the continuing of the same line)
+
+		0x00000200, 0x00000180, 0x00000600, 0x00000480, 0x00000010, \
+		0x0000000c
+
+		00000000,00000000,00000000,00000000,00000000,00000000,00000000,\
+		00000000,00000000,00000000,00000000,00000000,00000000,00000000,\
+		00000000,00000000,00000000,00000000,00000000,00000000,00000000,\
+		00000000,00000000,00000000,00000000,00000000,00000000,00000000,\
+		00000000,00000000,00000000,00000000,00000000,00000000,00000000,\
+		00000000,ffffffff,ffffffff,ffffffff,ffffffff,ffffffff,ffffffff,\
+		ffffffff,ffffffff,ffffffff,ffffffff,ffffffff,ffffffff,ffffffff,\
+		ffffffff,00000000,00000000,00000000,00000000,00000000,00000000,\
+		00000000,00000000,00000000,00000000,00000000,00000000,ffffffff,\
+		ffffffff
+                000f
+
+
+		The first line shows 6 numbers: total CPU visible Graphics memory size,
+		free CPU visible graphics memory size, toal CPU invisible graphics memory size,
+		free CPU invisible graphics memory size, total number of fence register
+		and the number of free fence registers. (Note: the first 4 are in 'MB').
+		The second and third line show the bitmap of graphics memory and
+		fence register allocation. Bits of "1" mean the resources have
+		been taken.
+
+4 XenGT debugfs interface
+
+XenGT debugfs interfaces are used for debugging and
+performance tuning. All XenGT debugfs entries are read-only.
+The command 'cat' can be used to get their contents.
+
+4.1 Global statistics
+
+PATH:		/sys/kernel/debug/vgt/context_switch_cycles
+DESCRIPTION:	Aggregated CPU cycles used by the switching of
+		rendering contexts.
+
+PATH:		/sys/kernel/debug/vgt/context_switch_num
+DESCRIPTION:	Aggregated number of context switches.
+
+PATH:		/sys/kernel/debug/vgt/gtt_mmio_rcnt
+DESCRIPTION:	Aggregated number of GTT MMIO read.
+
+PATH:		/sys/kernel/debug/vgt/gtt_mmio_rcycles
+DESCRIPTION:	Aggregated CPU cycles used by GTT MMIO read.
+
+PATH:		/sys/kernel/debug/vgt/gtt_mmio_wcnt
+DESCRIPTION:	Aggregated number of GTT MMIO write.
+
+PATH:		/sys/kernel/debug/vgt/gtt_mmio_wcycles
+DESCRIPTION:	Aggregated CPU cycles used by GTT MMIO write.
+
+PATH:		/sys/kernel/debug/vgt/irqinfo
+DESCRIPTION:	Statistics for all physical and virtual interrupts
+		on each VMs.
+
+PATH:		/sys/kernel/debug/vgt/mmio_rcnt
+DESCRIPTION:	Aggregated number of MMIO register read.
+
+PATH:		/sys/kernel/debug/vgt/mmio_rcycles
+DESCRIPTION:	Aggregated CPU cycles used by MMIO register read.
+
+PATH:		/sys/kernel/debug/vgt/mmio_wcnt
+DESCRIPTION:	Aggregated number of MMIO register write.
+
+PATH:		/sys/kernel/debug/vgt/mmio_wcycles
+DESCRIPTION:	Aggregated CPU cycles used by MMIO register write.
+
+PATH:		/sys/kernel/debug/vgt/preg
+DESCRIPTION:	It is used to dump the contents of all physical MMIO
+		registers. It's always dangerous to read from physical MMIO
+		registers directly, since some read has side effect, e.g.
+		read-to-clear bit.So use it with caution only when debugging
+		hard GPU hang problem.
+
+PATH:		/sys/kernel/debug/vgt/reginfo
+DESCRIPTION:	Dumping "access model" of each MMIO registers.
+		This includes the "Flags", "Owner" and "Type" fields.
+		"Flags" is a DWORD its format like below:
+		bit 17 - 31	: Index into another auxiliary table.
+		bit 14 - 16	: Reserved.
+		bit 13		: This reg is saved/restored at context
+				  switch time.
+		bit 12		: This reg is virtualized, but accessible
+				  by Dom0 at boot time.
+		bit 11		: This reg has been accessed by a VM.
+		bit 10		: This reg has been tracked by XenGT.
+		bit 9		: VM has different settings on this reg.
+		bit 8		: Mode ctl reg with high 16 bits as the mask.
+		bit 7		: This reg is pure virtualized.
+		bit 6		: This reg contains status bit updated
+				  from HW.
+		bit 5		: This reg contains address requiring fix.
+		bit 4		: This is a workaround reg. It means: Allows
+				  physical MMIO  access from any VM but w/o
+				  save/restore regs  marked with this flag
+				  should be treated as unsafe.
+		bit 0 - 3	: Owner type of the reg, up to 16 owner type.
+
+		"Owner" is a string name of the owner type but only include 5
+		owner name:
+		"NONE"		: There is no ownership for this reg.
+		"Render"	: This reg is rendering related.
+		"Display"	: This reg is display related.
+		"PM"		: This reg is power management related.
+		"MGMT"		: This reg is management related.
+
+		"Type" is also a string telling main "Flags" of the reg and
+		include 4 type:
+		"MPT"		: Mediate pass-through
+		"Boot"		: This reg is virtualized, but accessible by
+				  Dom0 at boot time
+		"WA"		: This reg is a workaround reg. Check the above
+				  for detailed information.
+
+PATH:		/sys/kernel/debug/vgt/irqinfo
+DESCRIPTION:	Statistics for all physical interrupts. And also virtual
+		interrupts injected to each VMs. Its content looks
+		like below.
+		--------------------------
+		Total 7 interrupts logged:
+		#	WARNING: precisely this is the number of vGT
+		#	physical interrupt handler be called,
+		#	each calling several events can be
+		#	been handled, so usually this number
+		#	is less than the total events number.
+				       2: GSE
+				       5: Primary Plane A flip done
+		    616863224224: Last pirq
+		    616863246160: Last virq
+			   13129: Average pirq cycles
+			    3585: Average virq cycles
+			    8150: Average delay between pirq/virq handling
+
+		-->vgt-0:
+		    118848451768: Last virq propagation
+			       0: Last blocked virq propagation
+		    118848452508: Last injection
+		Total 3 virtual irq injection:
+				       2: GSE
+				       1: Primary Plane A flip done
+
+		-->vgt-1:
+		    616863247316: Last virq propagation
+		    616244474088: Last blocked virq propagation
+		    616863251092: Last injection
+		Total 3 virtual irq injection:
+				       3: Primary Plane A flip done
+
+		This interface show 3 kinds of statistics info:
+		1) Events timestamp;
+		2) CPU cycles used for handling pirq and virq;
+		3) Distribution of interrupt numbers;
+
+		These "Events" include:
+		"Last pirq":	Physical irq from Gen hardware
+		"Last virq":	Virtual irq generated from XenGT.
+				The difference between these two
+				timestamp is the cost of
+				handling physical interrupts.
+		"Last virq propagation":
+				Set virtual interrupt status when
+				the specific bit not masked by IMR.
+		"Last blocked virq propagation":
+				Set virtual interrupt status when
+				the specific bit masked by IMR.
+		"Last injection":
+				After the hypercall of injecting
+				virtual interrupts to some VM.
+		When the timestamp is 0, it means such events never
+		happened.
+
+PATH:		/sys/kernel/debug/vgt/ring_0_busy
+DESCRIPTION:	Statistics for ring 0 busy in oprofile. When ring_0
+		is busy, this counter will be increased.
+
+PATH:		/sys/kernel/debug/vgt/ring_0_idle
+DESCRIPTION:	Statistics for ring 0 idle in oprofile. When ring_0
+		is idle, this counter will be increased.
+
+PATH:		/sys/kernel/debug/vgt/ring_mmio_rcnt
+DESCRIPTION:	Statistics for ringbuffer reg read.
+		These registers include: TAIL, HEAD, START,
+		and CTL. This interface counts ringbuffer
+		regs for all ringbuffers.
+
+PATH:		/sys/kernel/debug/vgt/ring_mmio_wcnt
+DESCRIPTION:	Statistics for ringbuffer reg write.
+		These registers include: TAIL, HEAD, START,
+		and CTL. This interface counts ringbuffer
+		regs for all ringbuffers.
+
+PATH:		/sys/kernel/debug/vgt/ring_tail_mmio_wcnt
+DESCRIPTION:	Statistics for ringbuffer tail reg write.
+
+PATH:		/sys/kernel/debug/vgt/ring_tail_mmio_wcycles
+DESCRIPTION:	The total CPU cycles used for all tail writing.
+
+4.2 Per VM statistics
+
+In below descriptions, VM ID is represented as 'X'.
+
+PATH:		/sys/kernel/debug/vgt/vmX/surfA_base
+		/sys/kernel/debug/vgt/vmX/surfB_base
+DESCRIPTION:	Surface A(B)'s base address in graphics memory space.
+
+PATH:		/sys/kernel/debug/vgt/vmX/shadow_mmio_space
+		/sys/kernel/debug/vgt/vmX/virtual_mmio_space
+DESCRIPTION:	Dumping shadow(virtual) MMIO space of a VM.
+
+PATH:		/sys/kernel/debug/vgt/vmX/allocated_cycles
+DESCRIPTION:	Total time vmX allocated to use rendering engines.
+		In old days, each VM will be assigned 16ms to use render
+		engines, in a round-robin way. But it usually takes more time
+		than given because of waiting for the idle state of render
+		engines.
+
+PATH:		/sys/kernel/debug/vgt/vmX/schedule_in_time
+DESCRIPTION:	Timestamp of the start of last context switch
+
+PATH:		/sys/kernel/debug/vgt/vmX/frame_buffer_format
+DESCRIPTION:	cat this node will dump all the frame buffer format information
+		for the vm.

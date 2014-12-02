@@ -142,6 +142,13 @@ i915_gem_wait_for_error(struct i915_gpu_error *error)
 	return 0;
 }
 
+int i915_wait_error_work_complete(struct drm_device *dev)
+{
+       struct drm_i915_private *dev_priv = dev->dev_private;
+
+       return i915_gem_wait_for_error(&dev_priv->gpu_error);
+}
+
 int i915_mutex_lock_interruptible(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -164,6 +171,19 @@ i915_gem_object_is_inactive(struct drm_i915_gem_object *obj)
 {
 	return i915_gem_obj_bound_any(obj) && !obj->active;
 }
+
+#ifdef DRM_I915_VGT_SUPPORT
+/*
+ * Get the number of assigned fence registers.
+ * through the PV INFO page.
+ */
+static inline int vgt_avail_fence_num(drm_i915_private_t *dev_priv)
+{
+	unsigned long   avail_fences;
+	avail_fences = I915_READ(vgt_info_off(avail_rs.fence_num));
+	return avail_fences;
+}
+#endif
 
 int
 i915_gem_init_ioctl(struct drm_device *dev, void *data,
@@ -3336,8 +3356,15 @@ search_free:
 		if (ret == 0)
 			goto search_free;
 
+		DRM_ERROR("fail to allocate space from %s GM space, size: %u.\n",
+				map_and_fenceable ? "low" : "whole",
+				size);
+
+		dump_stack();
+
 		goto err_free_vma;
 	}
+
 	if (WARN_ON(!i915_gem_valid_gtt_space(dev, &vma->node,
 					      obj->cache_level))) {
 		ret = -EINVAL;
@@ -4715,6 +4742,12 @@ i915_gem_load(struct drm_device *dev)
 		dev_priv->num_fence_regs = 16;
 	else
 		dev_priv->num_fence_regs = 8;
+
+#ifdef DRM_I915_VGT_SUPPORT
+	if (dev_priv->in_xen_vgt)
+		dev_priv->num_fence_regs = vgt_avail_fence_num(dev_priv);
+	printk("i915: the number of the fence registers (%d)\n", dev_priv->num_fence_regs);
+#endif
 
 	/* Initialize fence registers to zero */
 	INIT_LIST_HEAD(&dev_priv->mm.fence_list);

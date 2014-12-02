@@ -39,11 +39,11 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
-#include <trace/events/xen.h>
 
 #include <asm/page.h>
 #include <asm/pgtable.h>
 
+#include <trace/events/xen.h>
 #include <xen/interface/xen.h>
 #include <xen/interface/sched.h>
 #include <xen/interface/physdev.h>
@@ -457,6 +457,14 @@ HYPERVISOR_hvm_op(int op, void *arg)
 {
        return _hypercall2(unsigned long, hvm_op, op, arg);
 }
+
+static inline int
+HYPERVISOR_domctl(
+	struct xen_domctl *arg)
+{
+	return _hypercall1(int, domctl, arg);
+}
+
 
 static inline int
 HYPERVISOR_tmem_op(

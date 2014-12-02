@@ -223,6 +223,7 @@ typedef struct _drm_i915_sarea {
 #define DRM_I915_GEM_GET_CACHING	0x30
 #define DRM_I915_REG_READ		0x31
 #define DRM_I915_GET_RESET_STATS	0x32
+#define DRM_I915_GEM_VGTBUFFER          0x33
 
 #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
 #define DRM_IOCTL_I915_FLUSH		DRM_IO ( DRM_COMMAND_BASE + DRM_I915_FLUSH)
@@ -273,6 +274,7 @@ typedef struct _drm_i915_sarea {
 #define DRM_IOCTL_I915_GEM_CONTEXT_DESTROY	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_CONTEXT_DESTROY, struct drm_i915_gem_context_destroy)
 #define DRM_IOCTL_I915_REG_READ			DRM_IOWR (DRM_COMMAND_BASE + DRM_I915_REG_READ, struct drm_i915_reg_read)
 #define DRM_IOCTL_I915_GET_RESET_STATS		DRM_IOWR (DRM_COMMAND_BASE + DRM_I915_GET_RESET_STATS, struct drm_i915_reset_stats)
+#define DRM_IOCTL_I915_GEM_VGTBUFFER		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_VGTBUFFER, struct drm_i915_gem_vgtbuffer)
 
 /* Allow drivers to submit batchbuffers directly to hardware, relying
  * on the security mechanisms provided by hardware.
@@ -1049,4 +1051,40 @@ struct drm_i915_reset_stats {
 	__u32 pad;
 };
 
+struct drm_i915_gem_vgtbuffer {
+        __u32 vmid;
+	__u32 plane_id;
+#define I915_VGT_PLANE_PRIMARY 1
+#define I915_VGT_PLANE_SPRITE 2
+#define I915_VGT_PLANE_CURSOR 3
+	__u32 pipe_id;
+	__u32 phys_pipe_id;
+	__u8  enabled;
+	__u8  tiled;
+	__u32 bpp;
+	__u32 hw_format;
+	__u32 drm_format;
+	__u32 start;
+	__u32 x_pos;
+	__u32 y_pos;
+	__u32 x_offset;
+	__u32 y_offset;
+	__u32 size;
+	__u32 width;
+	__u32 height;
+	__u32 stride;
+	__u64 user_ptr;
+	__u32 user_size;
+	__u32 flags;
+#define I915_VGTBUFFER_READ_ONLY (1<<0)
+#define I915_VGTBUFFER_QUERY_ONLY (1<<1)
+#define I915_VGTBUFFER_UNSYNCHRONIZED 0x80000000
+
+	/**
+	 * Returned handle for the object.
+	 *
+	 * Object handles are nonzero.
+	 */
+	__u32 handle;
+};
 #endif /* _UAPI_I915_DRM_H_ */

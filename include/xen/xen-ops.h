@@ -35,4 +35,9 @@ int xen_unmap_domain_mfn_range(struct vm_area_struct *vma,
 			       int numpgs, struct page **pages);
 
 bool xen_running_on_version_or_later(unsigned int major, unsigned int minor);
+
+struct vm_struct * xen_remap_domain_mfn_range_in_kernel(unsigned long mfn,
+        int nr, unsigned domid);
+void xen_unmap_domain_mfn_range_in_kernel(struct vm_struct *area, int nr,
+		unsigned domid);
 #endif /* INCLUDE_XEN_OPS_H */

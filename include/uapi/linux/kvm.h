@@ -12,7 +12,7 @@
 #include <linux/ioctl.h>
 #include <asm/kvm.h>
 
-#define KVM_API_VERSION 12
+#define KVM_API_VERSION 100
 
 /* *** Deprecated interfaces *** */
 
@@ -530,8 +530,8 @@ struct kvm_ppc_smmu_info {
 #define KVM_GET_API_VERSION       _IO(KVMIO,   0x00)
 #define KVM_CREATE_VM             _IO(KVMIO,   0x01) /* returns a VM fd */
 #define KVM_GET_MSR_INDEX_LIST    _IOWR(KVMIO, 0x02, struct kvm_msr_list)
-
 #define KVM_S390_ENABLE_SIE       _IO(KVMIO,   0x06)
+
 /*
  * Check if a kvm extension is available.  Argument is extension number,
  * return is 1 (yes) or 0 (no, sorry).
@@ -1076,5 +1076,18 @@ struct kvm_assigned_msix_entry {
 	__u16 entry; /* The index of entry in the MSI-X table */
 	__u16 padding[3];
 };
+
+
+/* for KVMGT Debug */
+#define JERROR(fmt, ...) \
+	printk("[kvmgt] %s-%d: "fmt, __func__, __LINE__, ##__VA_ARGS__);
+#if 1
+#define JDPRINT JERROR
+#else
+#define JDPRINT do {} while (0)
+#endif
+
+#define KVM_GET_DOMID                   _IO(KVMIO, 0x100)
+#define KVM_VGT_SET_OPREGION            _IOW(KVMIO, 0x101, uint32_t)
 
 #endif /* __LINUX_KVM_H */

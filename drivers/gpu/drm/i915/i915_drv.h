@@ -43,6 +43,18 @@
 #include <linux/intel-iommu.h>
 #include <linux/kref.h>
 #include <linux/pm_qos.h>
+#include <linux/irq_work.h>
+
+#if defined(CONFIG_I915_VGT)
+#define DRM_I915_VGT_SUPPORT	1
+#endif
+
+#ifdef DRM_I915_VGT_SUPPORT
+#include "vgt-if.h"
+#include "i915_mediate.h"
+#include "fb_decoder.h"
+#endif
+
 
 /* General customization:
  */
@@ -1030,6 +1042,12 @@ struct i915_gem_mm {
 
 	/** PPGTT used for aliasing the PPGTT with the GTT */
 	struct i915_hw_ppgtt *aliasing_ppgtt;
+	/*
+	 * VGT:
+	 * Original i915 driver in 3.11.6 remove this entry,
+	 * whatever we need this for PPGTT ballooning.
+	 */
+	unsigned int first_ppgtt_pde_in_gtt;
 
 	struct shrinker inactive_shrinker;
 	bool shrinker_no_lock_stealing;
@@ -1073,6 +1091,14 @@ struct i915_gem_mm {
 	spinlock_t object_stat_lock;
 	size_t object_memory;
 	u32 object_count;
+
+#ifdef DRM_I915_VGT_SUPPORT
+	/* VGT balloon info */
+	unsigned long vgt_low_gm_base;
+	unsigned long vgt_low_gm_size;
+	unsigned long vgt_high_gm_base;
+	unsigned long vgt_high_gm_size;
+#endif
 };
 
 struct drm_i915_error_state_buf {
@@ -1532,8 +1558,19 @@ typedef struct drm_i915_private {
 	/* Old dri1 support infrastructure, beware the dragons ya fools entering
 	 * here! */
 	struct i915_dri1_state dri1;
+
 	/* Old ums support infrastructure, same warning applies. */
 	struct i915_ums_state ums;
+
+	bool in_xen_vgt;
+
+	int mmio_size;
+
+	/* vgt host irq mediation */
+	irqreturn_t (*host_isr)(int irq, void *arg);
+	void *pgt;
+	struct irq_work irq_work;
+	void (*irq_uninstall) (struct drm_device *dev);
 } drm_i915_private_t;
 
 static inline struct drm_i915_private *to_i915(const struct drm_device *dev)
@@ -1890,6 +1927,8 @@ extern int i915_max_ioctl;
 extern unsigned int i915_fbpercrtc __always_unused;
 extern int i915_panel_ignore_lid __read_mostly;
 extern unsigned int i915_powersave __read_mostly;
+extern bool i915_host_mediate __read_mostly;
+extern unsigned int i915_raw_mmio __read_mostly;
 extern int i915_semaphores __read_mostly;
 extern unsigned int i915_lvds_downclock __read_mostly;
 extern int i915_lvds_channel_mode __read_mostly;
@@ -1898,6 +1937,7 @@ extern int i915_vbt_sdvo_panel_type __read_mostly;
 extern int i915_enable_rc6 __read_mostly;
 extern int i915_enable_fbc __read_mostly;
 extern bool i915_enable_hangcheck __read_mostly;
+extern bool i915_ctx_switch __read_mostly;
 extern int i915_enable_ppgtt __read_mostly;
 extern int i915_enable_psr __read_mostly;
 extern unsigned int i915_preliminary_hw_support __read_mostly;
@@ -2123,6 +2163,7 @@ int __must_check i915_gem_init(struct drm_device *dev);
 int __must_check i915_gem_init_hw(struct drm_device *dev);
 int i915_gem_l3_remap(struct intel_ring_buffer *ring, int slice);
 void i915_gem_init_swizzling(struct drm_device *dev);
+bool intel_enable_ppgtt(struct drm_device *dev);
 void i915_gem_cleanup_ringbuffer(struct drm_device *dev);
 int __must_check i915_gpu_idle(struct drm_device *dev);
 int __must_check i915_gem_suspend(struct drm_device *dev);
@@ -2267,7 +2308,7 @@ void i915_gem_gtt_bind_object(struct drm_i915_gem_object *obj,
 void i915_gem_gtt_unbind_object(struct drm_i915_gem_object *obj);
 void i915_gem_gtt_finish_object(struct drm_i915_gem_object *obj);
 void i915_gem_init_global_gtt(struct drm_device *dev);
-void i915_gem_setup_global_gtt(struct drm_device *dev, unsigned long start,
+int i915_gem_setup_global_gtt(struct drm_device *dev, unsigned long start,
 			       unsigned long mappable_end, unsigned long end);
 int i915_gem_gtt_init(struct drm_device *dev);
 static inline void i915_gem_chipset_flush(struct drm_device *dev)
@@ -2464,6 +2505,17 @@ extern void intel_display_print_error_state(struct drm_i915_error_state_buf *e,
 void gen6_gt_force_wake_get(struct drm_i915_private *dev_priv, int fw_engine);
 void gen6_gt_force_wake_put(struct drm_i915_private *dev_priv, int fw_engine);
 
+#ifdef CONFIG_I915_VGT
+void *vgt_install_irq(struct pci_dev *pdev, struct drm_device *dev);
+void vgt_uninstall_irq(struct pci_dev *pdev);
+irqreturn_t vgt_interrupt(int irq, void *data);
+#endif
+
+#ifdef DRM_I915_VGT_SUPPORT
+#define VGT_IF_VERSION	0x10000		/* 1.0 */
+extern void i915_check_vgt(struct drm_device *dev);
+#endif
+
 int sandybridge_pcode_read(struct drm_i915_private *dev_priv, u8 mbox, u32 *val);
 int sandybridge_pcode_write(struct drm_i915_private *dev_priv, u8 mbox, u32 val);
 
@@ -2511,6 +2563,17 @@ void vlv_force_wake_put(struct drm_i915_private *dev_priv, int fw_engine);
 #define FORCEWAKE_MEDIA		(1 << 1)
 #define FORCEWAKE_ALL		(FORCEWAKE_RENDER | FORCEWAKE_MEDIA)
 
+#define __i915_gtt_read(x, y) \
+u##x i915_gtt_read##x(struct drm_i915_private *dev_priv, void * __iomem addr);
+__i915_gtt_read(32, l)
+__i915_gtt_read(64, q)
+#undef __i915_gtt_read
+#define __i915_gtt_write(x, y) \
+void i915_gtt_write##x(struct drm_i915_private *dev_priv, u##x val, void * __iomem addr);
+__i915_gtt_write(32, l)
+__i915_gtt_write(64, q)
+#undef __i915_gtt_write
+
 
 #define I915_READ8(reg)		dev_priv->uncore.funcs.mmio_readb(dev_priv, (reg), true)
 #define I915_WRITE8(reg, val)	dev_priv->uncore.funcs.mmio_writeb(dev_priv, (reg), (val), true)
@@ -2530,6 +2593,20 @@ void vlv_force_wake_put(struct drm_i915_private *dev_priv, int fw_engine);
 
 #define POSTING_READ(reg)	(void)I915_READ_NOTRACE(reg)
 #define POSTING_READ16(reg)	(void)I915_READ16_NOTRACE(reg)
+
+
+#ifndef DRM_I915_VGT_SUPPORT
+#define GTT_READ32(addr)	readl(addr)
+#define GTT_READ64(addr)	readq(addr)
+#define GTT_WRITE32(val, addr)	writel(val, addr)
+#define GTT_WRITE64(val, addr)	writeq(val, addr)
+#else
+#define GTT_READ32(addr)	i915_gtt_read32(dev_priv, addr)
+#define GTT_READ64(addr)	i915_gtt_read64(dev_priv, addr)
+#define GTT_WRITE32(val, addr)	i915_gtt_write32(dev_priv, val, addr)
+#define GTT_WRITE64(val, addr)	i915_gtt_write64(dev_priv, val, addr)
+#endif
+
 
 /* "Broadcast RGB" property */
 #define INTEL_BROADCAST_RGB_AUTO 0

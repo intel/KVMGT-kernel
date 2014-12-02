@@ -61,6 +61,11 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/kvm.h>
 
+#ifdef CONFIG_KVMGT
+#include "vgt_helper.h"
+#endif
+
+
 MODULE_AUTHOR("Qumranet");
 MODULE_LICENSE("GPL");
 
@@ -502,6 +507,10 @@ static struct kvm *kvm_create_vm(unsigned long type)
 	list_add(&kvm->vm_list, &vm_list);
 	spin_unlock(&kvm_lock);
 
+#ifdef CONFIG_KVMGT
+	kvmgt_init(kvm);
+#endif
+
 	return kvm;
 
 out_err:
@@ -601,6 +610,10 @@ static void kvm_destroy_vm(struct kvm *kvm)
 #else
 	kvm_arch_flush_shadow_all(kvm);
 #endif
+
+#ifdef CONFIG_KVMGT
+	kvmgt_put_vgt(kvm);
+#endif
 	kvm_arch_destroy_vm(kvm);
 	kvm_destroy_devices(kvm);
 	kvm_free_physmem(kvm);
@@ -618,8 +631,9 @@ EXPORT_SYMBOL_GPL(kvm_get_kvm);
 
 void kvm_put_kvm(struct kvm *kvm)
 {
-	if (atomic_dec_and_test(&kvm->users_count))
+	if (atomic_dec_and_test(&kvm->users_count)) {
 		kvm_destroy_vm(kvm);
+	}
 }
 EXPORT_SYMBOL_GPL(kvm_put_kvm);
 
@@ -717,9 +731,19 @@ static struct kvm_memslots *install_new_memslots(struct kvm *kvm,
 {
 	struct kvm_memslots *old_memslots = kvm->memslots;
 
+#if 1 && defined(CONFIG_KVMGT)
+	if (kvm->vgt_enabled)
+		WARN_ON_ONCE(srcu_read_lock_held(&kvm->srcu));
+#endif
+
 	update_memslots(slots, new, kvm->memslots->generation);
+#ifndef CONFIG_KVMGT
 	rcu_assign_pointer(kvm->memslots, slots);
 	synchronize_srcu_expedited(&kvm->srcu);
+#else
+	smp_wmb();
+	kvm->memslots = slots;
+#endif
 
 	kvm_arch_memslots_updated(kvm);
 
@@ -751,29 +775,41 @@ int __kvm_set_memory_region(struct kvm *kvm,
 
 	r = -EINVAL;
 	/* General sanity checks */
-	if (mem->memory_size & (PAGE_SIZE - 1))
+	if (mem->memory_size & (PAGE_SIZE - 1)) {
+		JERROR("hi\n")
 		goto out;
-	if (mem->guest_phys_addr & (PAGE_SIZE - 1))
+	}
+	if (mem->guest_phys_addr & (PAGE_SIZE - 1)) {
+		JERROR("hi\n");
 		goto out;
+	}
 	/* We can read the guest memory with __xxx_user() later on. */
 	if ((mem->slot < KVM_USER_MEM_SLOTS) &&
 	    ((mem->userspace_addr & (PAGE_SIZE - 1)) ||
 	     !access_ok(VERIFY_WRITE,
 			(void __user *)(unsigned long)mem->userspace_addr,
-			mem->memory_size)))
+			mem->memory_size))) {
+		JERROR("hi\n");
 		goto out;
-	if (mem->slot >= KVM_MEM_SLOTS_NUM)
+	}
+	if (mem->slot >= KVM_MEM_SLOTS_NUM) {
+		JERROR("hi\n");
 		goto out;
-	if (mem->guest_phys_addr + mem->memory_size < mem->guest_phys_addr)
+	}
+	if (mem->guest_phys_addr + mem->memory_size < mem->guest_phys_addr) {
+		JERROR("hi\n");
 		goto out;
+	}
 
 	slot = id_to_memslot(kvm->memslots, mem->slot);
 	base_gfn = mem->guest_phys_addr >> PAGE_SHIFT;
 	npages = mem->memory_size >> PAGE_SHIFT;
 
 	r = -EINVAL;
-	if (npages > KVM_MEM_MAX_NR_PAGES)
+	if (npages > KVM_MEM_MAX_NR_PAGES) {
+		JERROR("hi\n");
 		goto out;
+	}
 
 	if (!npages)
 		mem->flags &= ~KVM_MEM_LOG_DIRTY_PAGES;
@@ -806,8 +842,10 @@ int __kvm_set_memory_region(struct kvm *kvm,
 		}
 	} else if (old.npages) {
 		change = KVM_MR_DELETE;
-	} else /* Modify a non-existent slot: disallowed. */
+	} else { /* Modify a non-existent slot: disallowed. */
+		JERROR("hi\n");
 		goto out;
+	}
 
 	if ((change == KVM_MR_CREATE) || (change == KVM_MR_MOVE)) {
 		/* Check for overlaps */
@@ -853,6 +891,7 @@ int __kvm_set_memory_region(struct kvm *kvm,
 
 		/* slot was deleted or moved, clear iommu mapping */
 		kvm_iommu_unmap_pages(kvm, &old);
+
 		/* From this point no new shadow pages pointing to a deleted,
 		 * or moved, memslot will be created.
 		 *
@@ -2329,6 +2368,20 @@ static long kvm_vm_ioctl(struct file *filp,
 	case KVM_CREATE_VCPU:
 		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
 		break;
+	case KVM_GET_DOMID:
+		r = kvm->domid;
+		break;
+	case KVM_VGT_SET_OPREGION: {
+		u32 gpa;
+
+		r = -EFAULT;
+		if (copy_from_user(&gpa, argp, sizeof(gpa)))
+			goto out;
+
+		kvm->opregion_gpa = gpa;
+		r = 0;
+		break;
+	}
 	case KVM_SET_USER_MEMORY_REGION: {
 		struct kvm_userspace_memory_region kvm_userspace_mem;
 
@@ -2946,6 +2999,8 @@ int kvm_io_bus_register_dev(struct kvm *kvm, enum kvm_bus bus_idx, gpa_t addr,
 {
 	struct kvm_io_bus *new_bus, *bus;
 
+	WARN_ON_ONCE(srcu_read_lock_held(&kvm->srcu));
+
 	bus = kvm->buses[bus_idx];
 	/* exclude ioeventfd which is limited by maximum fd */
 	if (bus->dev_count - bus->ioeventfd_count > NR_IOBUS_DEVS - 1)
@@ -2958,8 +3013,13 @@ int kvm_io_bus_register_dev(struct kvm *kvm, enum kvm_bus bus_idx, gpa_t addr,
 	memcpy(new_bus, bus, sizeof(*bus) + (bus->dev_count *
 	       sizeof(struct kvm_io_range)));
 	kvm_io_bus_insert_dev(new_bus, dev, addr, len);
+#ifndef CONFIG_KVMGT
 	rcu_assign_pointer(kvm->buses[bus_idx], new_bus);
 	synchronize_srcu_expedited(&kvm->srcu);
+#else
+	smp_wmb();
+	kvm->buses[bus_idx] = new_bus;
+#endif
 	kfree(bus);
 
 	return 0;
@@ -2993,8 +3053,13 @@ int kvm_io_bus_unregister_dev(struct kvm *kvm, enum kvm_bus bus_idx,
 	memcpy(new_bus->range + i, bus->range + i + 1,
 	       (new_bus->dev_count - i) * sizeof(struct kvm_io_range));
 
+#ifndef CONFIG_KVMGT
 	rcu_assign_pointer(kvm->buses[bus_idx], new_bus);
 	synchronize_srcu_expedited(&kvm->srcu);
+#else
+	smp_wmb();
+	kvm->buses[bus_idx] = new_bus;
+#endif
 	kfree(bus);
 	return r;
 }

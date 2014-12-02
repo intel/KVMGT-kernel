@@ -1853,6 +1853,8 @@ void intel_flush_primary_plane(struct drm_i915_private *dev_priv,
 {
 	u32 reg = dev_priv->info->gen >= 4 ? DSPSURF(plane) : DSPADDR(plane);
 
+	printk("i915: intel_flush_display_plane\n");
+
 	I915_WRITE(reg, I915_READ(reg));
 	POSTING_READ(reg);
 }
@@ -2038,6 +2040,7 @@ static int i9xx_update_plane(struct drm_crtc *crtc, struct drm_framebuffer *fb,
 	u32 dspcntr;
 	u32 reg;
 
+	printk("ironlake_update_plane\n");
 	switch (plane) {
 	case 0:
 	case 1:
@@ -2138,6 +2141,7 @@ static int ironlake_update_plane(struct drm_crtc *crtc,
 	u32 dspcntr;
 	u32 reg;
 
+	printk("i9xx_update_plane\n");
 	switch (plane) {
 	case 0:
 	case 1:
@@ -2722,7 +2726,7 @@ static void gen6_fdi_link_train(struct drm_crtc *crtc)
 	if (i == 4)
 		DRM_ERROR("FDI train 2 fail!\n");
 
-	DRM_DEBUG_KMS("FDI train done.\n");
+	printk("FDI train done.\n");
 }
 
 /* Manual link training for Ivy Bridge A0 parts */
@@ -2763,6 +2767,9 @@ static void ivb_manual_fdi_link_train(struct drm_crtc *crtc)
 		temp &= ~FDI_LINK_TRAIN_PATTERN_MASK_CPT;
 		temp &= ~FDI_RX_ENABLE;
 		I915_WRITE(reg, temp);
+
+		POSTING_READ(reg);
+		udelay(150);
 
 		/* enable CPU FDI TX and PCH FDI RX */
 		reg = FDI_TX_CTL(pipe);
@@ -2805,6 +2812,9 @@ static void ivb_manual_fdi_link_train(struct drm_crtc *crtc)
 			DRM_DEBUG_KMS("FDI train 1 fail on vswing %d\n", j / 2);
 			continue;
 		}
+
+		POSTING_READ(reg);
+		udelay(150);
 
 		/* Train 2 */
 		reg = FDI_TX_CTL(pipe);
@@ -9980,6 +9990,8 @@ static int intel_crtc_set_config(struct drm_mode_set *set)
 	struct drm_mode_set save_set;
 	struct intel_set_config *config;
 	int ret;
+	
+	drm_i915_private_t *dev_priv;
 
 	BUG_ON(!set);
 	BUG_ON(!set->crtc);
@@ -9998,6 +10010,7 @@ static int intel_crtc_set_config(struct drm_mode_set *set)
 	}
 
 	dev = set->crtc->dev;
+	dev_priv = dev->dev_private;
 
 	ret = -ENOMEM;
 	config = kzalloc(sizeof(*config), GFP_KERNEL);
@@ -10044,6 +10057,17 @@ static int intel_crtc_set_config(struct drm_mode_set *set)
 			intel_modeset_check_state(set->crtc->dev);
 	}
 
+#ifdef DRM_I915_VGT_SUPPORT
+		if (dev_priv->in_xen_vgt == true) {
+			/*
+			 * Tell VGT that we have a valid surface to show
+			 * after modesetting. We doesn't distinguish DOM0 and
+			 * Linux guest here, The PVINFO write handler will
+			 * handle this.
+			 */
+			I915_WRITE(vgt_info_off(display_ready), 1);		
+		}
+#endif
 	if (ret) {
 		DRM_DEBUG_KMS("failed to set mode on [CRTC:%d], err = %d\n",
 			      set->crtc->base.id, ret);

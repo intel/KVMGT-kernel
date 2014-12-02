@@ -1806,5 +1806,8 @@ static inline struct eeh_dev *pci_dev_to_eeh_dev(struct pci_dev *pdev)
  * parent
  */
 struct pci_dev *pci_find_upstream_pcie_bridge(struct pci_dev *pdev);
+/* VGT device definition */
+#define VGT_BUS_ID	0
+#define VGT_DEVFN	0x10	/* B:D:F = 0:2:0 */
 
 #endif /* LINUX_PCI_H */

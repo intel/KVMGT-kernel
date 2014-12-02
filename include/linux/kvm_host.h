@@ -403,6 +403,15 @@ struct kvm {
 #endif
 	long tlbs_dirty;
 	struct list_head devices;
+
+#ifdef CONFIG_KVMGT
+	int domid;
+	bool vgt_enabled;
+	struct vgt_device *vgt;
+	u32 opregion_gpa;	/* may not be page-aligned */
+	u64 opregion_hva;	/* userspace addr */
+	u64 aperture_hpa;
+#endif
 };
 
 #define kvm_err(fmt, ...) \

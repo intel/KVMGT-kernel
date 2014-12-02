@@ -255,6 +255,9 @@ int i915_gem_context_init(struct drm_device *dev)
 	if (!HAS_HW_CONTEXTS(dev))
 		return 0;
 
+	if (i915_ctx_switch == false)
+		return 0;
+
 	/* If called from reset, or thaw... we've been here already */
 	if (dev_priv->ring[RCS].default_context)
 		return 0;

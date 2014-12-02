@@ -97,6 +97,7 @@ static inline int get_si_code(unsigned long condition)
 }
 
 extern int panic_on_unrecovered_nmi;
+extern int register_gp_prehandler(int (*handler)(struct pt_regs *regs, long error_code));
 
 void math_error(struct pt_regs *, int, int);
 void math_emulate(struct math_emu_info *);

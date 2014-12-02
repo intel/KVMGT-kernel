@@ -26,6 +26,7 @@
 
 #define FORCEWAKE_ACK_TIMEOUT_MS 2
 
+#ifndef CONFIG_I915_VGT
 #define __raw_i915_read8(dev_priv__, reg__) readb((dev_priv__)->regs + (reg__))
 #define __raw_i915_write8(dev_priv__, reg__, val__) writeb(val__, (dev_priv__)->regs + (reg__))
 
@@ -39,6 +40,69 @@
 #define __raw_i915_write64(dev_priv__, reg__, val__) writeq(val__, (dev_priv__)->regs + (reg__))
 
 #define __raw_posting_read(dev_priv__, reg__) (void)__raw_i915_read32(dev_priv__, reg__)
+
+#else /* CONFIG_I915_VGT */
+
+#define raw_i915_read(x, y)								\
+u##x __raw_i915_read##x(struct drm_i915_private *dev_priv, u32 reg) {			\
+	u##x val = 0;									\
+	if (i915_host_mediate)								\
+		val = i915_hm_read##y((uint64_t)(dev_priv)->regs, (reg));		\
+	else										\
+		val = read##y(dev_priv->regs + reg);					\
+	return val;									\
+}
+raw_i915_read(8, b)
+raw_i915_read(16, w)
+raw_i915_read(32, l)
+raw_i915_read(64, q)
+#undef raw_i915_read
+
+#define raw_i915_write(x, y)								\
+void __raw_i915_write##x(struct drm_i915_private *dev_priv, u32 reg, u##x val) {	\
+	if (i915_host_mediate)								\
+		i915_hm_write##y(&val, (uint64_t)dev_priv->regs, reg);			\
+	else										\
+		write##y(val, dev_priv->regs + reg);					\
+}
+raw_i915_write(8, b)
+raw_i915_write(16, w)
+raw_i915_write(32, l)
+raw_i915_write(64, q)
+#undef raw_i915_write
+
+#define __raw_posting_read(dev_priv__, reg__) (void)__raw_i915_read32(dev_priv__, reg__)
+
+
+#define __i915_gtt_read(x, y)								\
+u##x i915_gtt_read##x(struct drm_i915_private *dev_priv, void * __iomem addr) {		\
+	u##x val = 0;									\
+	u32 offset = (unsigned long)addr - (unsigned long)dev_priv->gtt.gsm;		\
+	if (i915_host_mediate)								\
+		val = i915_hm_read##y((uint64_t)dev_priv->gtt.gsm,			\
+					offset + dev_priv->mmio_size);			\
+	else										\
+		val = read##y(dev_priv->gtt.gsm + offset);				\
+	return val;									\
+}
+__i915_gtt_read(32, l)
+__i915_gtt_read(64, q)
+#undef __i915_gtt_read
+#define __i915_gtt_write(x, y)								\
+void i915_gtt_write##x(struct drm_i915_private *dev_priv, u##x val,			\
+		void * __iomem addr) {							\
+	u32 offset = (unsigned long)addr - (unsigned long)dev_priv->gtt.gsm;		\
+	if (i915_host_mediate)								\
+		i915_hm_write##y(&val, (uint64_t)dev_priv->gtt.gsm,			\
+					offset + dev_priv->mmio_size);			\
+	else										\
+		write##y(val, dev_priv->gtt.gsm + offset);					\
+}
+__i915_gtt_write(32, l)
+__i915_gtt_write(64, q)
+#undef __i915_gtt_write
+
+#endif
 
 
 static void __gen6_gt_wait_for_thread_c0(struct drm_i915_private *dev_priv)
@@ -416,7 +480,7 @@ void gen6_gt_force_wake_put(struct drm_i915_private *dev_priv, int fw_engine)
 
 /* We give fast paths for the really cool registers */
 #define NEEDS_FORCE_WAKE(dev_priv, reg) \
-	 ((reg) < 0x40000 && (reg) != FORCEWAKE)
+	 ((!(dev_priv)->in_xen_vgt) && (reg) < 0x40000 && (reg) != FORCEWAKE)
 
 static void
 ilk_dummy_write(struct drm_i915_private *dev_priv)
@@ -456,6 +520,13 @@ assert_device_not_suspended(struct drm_i915_private *dev_priv)
 #define REG_READ_HEADER(x) \
 	unsigned long irqflags; \
 	u##x val = 0; \
+	if (dev_priv->in_xen_vgt) {     \
+		spin_lock_irqsave(&dev_priv->uncore.lock, irqflags); \
+		val = __raw_i915_read##x(dev_priv, reg); \
+		spin_unlock_irqrestore(&dev_priv->uncore.lock, irqflags); \
+		trace_i915_reg_rw(false, reg, val, sizeof(val), trace); \
+		return val; \
+	} \
 	spin_lock_irqsave(&dev_priv->uncore.lock, irqflags)
 
 #define REG_READ_FOOTER \
@@ -551,9 +622,15 @@ __gen4_read(64)
 #undef REG_READ_FOOTER
 #undef REG_READ_HEADER
 
-#define REG_WRITE_HEADER \
+#define REG_WRITE_HEADER(x) \
 	unsigned long irqflags; \
 	trace_i915_reg_rw(true, reg, val, sizeof(val), trace); \
+	if (dev_priv->in_xen_vgt) { \
+		spin_lock_irqsave(&dev_priv->uncore.lock, irqflags); \
+		__raw_i915_write##x(dev_priv, reg, val); \
+		spin_unlock_irqrestore(&dev_priv->uncore.lock, irqflags); \
+		return; \
+	} \
 	spin_lock_irqsave(&dev_priv->uncore.lock, irqflags)
 
 #define REG_WRITE_FOOTER \
@@ -562,7 +639,7 @@ __gen4_read(64)
 #define __gen4_write(x) \
 static void \
 gen4_write##x(struct drm_i915_private *dev_priv, off_t reg, u##x val, bool trace) { \
-	REG_WRITE_HEADER; \
+	REG_WRITE_HEADER(x); \
 	__raw_i915_write##x(dev_priv, reg, val); \
 	REG_WRITE_FOOTER; \
 }
@@ -570,7 +647,7 @@ gen4_write##x(struct drm_i915_private *dev_priv, off_t reg, u##x val, bool trace
 #define __gen5_write(x) \
 static void \
 gen5_write##x(struct drm_i915_private *dev_priv, off_t reg, u##x val, bool trace) { \
-	REG_WRITE_HEADER; \
+	REG_WRITE_HEADER(x); \
 	ilk_dummy_write(dev_priv); \
 	__raw_i915_write##x(dev_priv, reg, val); \
 	REG_WRITE_FOOTER; \
@@ -580,7 +657,7 @@ gen5_write##x(struct drm_i915_private *dev_priv, off_t reg, u##x val, bool trace
 static void \
 gen6_write##x(struct drm_i915_private *dev_priv, off_t reg, u##x val, bool trace) { \
 	u32 __fifo_ret = 0; \
-	REG_WRITE_HEADER; \
+	REG_WRITE_HEADER(x); \
 	if (NEEDS_FORCE_WAKE((dev_priv), (reg))) { \
 		__fifo_ret = __gen6_gt_wait_for_fifo(dev_priv); \
 	} \
@@ -596,7 +673,7 @@ gen6_write##x(struct drm_i915_private *dev_priv, off_t reg, u##x val, bool trace
 static void \
 hsw_write##x(struct drm_i915_private *dev_priv, off_t reg, u##x val, bool trace) { \
 	u32 __fifo_ret = 0; \
-	REG_WRITE_HEADER; \
+	REG_WRITE_HEADER(x); \
 	if (NEEDS_FORCE_WAKE((dev_priv), (reg))) { \
 		__fifo_ret = __gen6_gt_wait_for_fifo(dev_priv); \
 	} \
@@ -635,7 +712,7 @@ static bool is_gen8_shadowed(struct drm_i915_private *dev_priv, u32 reg)
 static void \
 gen8_write##x(struct drm_i915_private *dev_priv, off_t reg, u##x val, bool trace) { \
 	bool __needs_put = reg < 0x40000 && !is_gen8_shadowed(dev_priv, reg); \
-	REG_WRITE_HEADER; \
+	REG_WRITE_HEADER(x); \
 	if (__needs_put) { \
 		dev_priv->uncore.funcs.force_wake_get(dev_priv, \
 							FORCEWAKE_ALL); \

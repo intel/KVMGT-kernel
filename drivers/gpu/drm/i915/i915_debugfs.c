@@ -583,6 +583,26 @@ static int i915_gem_seqno_info(struct seq_file *m, void *data)
 	return 0;
 }
 
+extern u64 i915_ring_0_idle;
+extern u64 i915_ring_0_busy;
+static int i915_ring_info(struct seq_file *m, void *data)
+{
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
+	struct drm_device *dev = node->minor->dev;
+	int ret;
+
+	ret = mutex_lock_interruptible(&dev->struct_mutex);
+	if (ret)
+		return ret;
+
+	seq_printf(m, "i915_ring_0_idle %08lx busy %08lx\n",
+			(unsigned long) i915_ring_0_idle,
+			(unsigned long) i915_ring_0_busy);
+
+	mutex_unlock(&dev->struct_mutex);
+
+	return 0;
+}
 
 static int i915_interrupt_info(struct seq_file *m, void *data)
 {
@@ -3224,6 +3244,7 @@ static const struct drm_info_list i915_debugfs_list[] = {
 	{"i915_gem_seqno", i915_gem_seqno_info, 0},
 	{"i915_gem_fence_regs", i915_gem_fence_regs_info, 0},
 	{"i915_gem_interrupt", i915_interrupt_info, 0},
+	{"i915_ring_info", i915_ring_info, 0},
 	{"i915_gem_hws", i915_hws_info, 0, (void *)RCS},
 	{"i915_gem_hws_blt", i915_hws_info, 0, (void *)BCS},
 	{"i915_gem_hws_bsd", i915_hws_info, 0, (void *)VCS},

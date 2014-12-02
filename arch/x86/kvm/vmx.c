@@ -44,6 +44,10 @@
 #include <asm/perf_event.h>
 #include <asm/kexec.h>
 
+#ifdef CONFIG_KVMGT
+#include "vgt_helper.h"
+#endif
+
 #include "trace.h"
 
 #define __ex(x) __kvm_handle_fault_on_reboot(x)
@@ -4885,12 +4889,19 @@ static int handle_io(struct kvm_vcpu *vcpu)
 	unsigned long exit_qualification;
 	int size, in, string;
 	unsigned port;
+	struct kvm *kvm = vcpu->kvm;
 
 	exit_qualification = vmcs_readl(EXIT_QUALIFICATION);
 	string = (exit_qualification & 16) != 0;
 	in = (exit_qualification & 8) != 0;
 
 	++vcpu->stat.io_exits;
+
+#ifdef CONFIG_KVMGT
+	if (kvm->vgt_enabled && !in) {
+		kvm_record_cf8(vcpu, exit_qualification, kvm_register_read(vcpu, VCPU_REGS_RAX));
+	}
+#endif
 
 	if (string || in)
 		return emulate_instruction(vcpu, 0) == EMULATE_DONE;

@@ -352,6 +352,19 @@ struct xenpf_core_parking {
 };
 DEFINE_GUEST_HANDLE_STRUCT(xenpf_core_parking);
 
+#define XENPF_set_vgt_info    61
+
+#define XEN_IGD_INVALID 0
+#define XEN_IGD_SNB     1
+#define XEN_IGD_IVB     2
+#define XEN_IGD_HSW     3
+#define XEN_IGD_MAX     3   /* the max GEN dev type supported */
+struct xenpf_vgt_info {
+	unsigned int gen_dev_bdf;
+	unsigned int gen_dev_type;
+};
+DEFINE_GUEST_HANDLE_STRUCT(xenpf_vgt_info);
+
 struct xen_platform_op {
 	uint32_t cmd;
 	uint32_t interface_version; /* XENPF_INTERFACE_VERSION */
@@ -372,6 +385,7 @@ struct xen_platform_op {
 		struct xenpf_cpu_hotadd        cpu_add;
 		struct xenpf_mem_hotadd        mem_add;
 		struct xenpf_core_parking      core_parking;
+		struct xenpf_vgt_info          vgt_info;
 		uint8_t                        pad[128];
 	} u;
 };

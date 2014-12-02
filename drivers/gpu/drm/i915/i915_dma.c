@@ -1317,11 +1317,11 @@ static int i915_load_modeset_init(struct drm_device *dev)
 	if (ret)
 		goto cleanup_vga_switcheroo;
 
+	intel_power_domains_init_hw(dev);
+
 	ret = drm_irq_install(dev);
 	if (ret)
 		goto cleanup_gem_stolen;
-
-	intel_power_domains_init_hw(dev);
 
 	/* Important: The output setup functions called by modeset_init need
 	 * working irqs for e.g. gmbus and dp aux transfers. */
@@ -1470,11 +1470,13 @@ static void i915_dump_device_info(struct drm_i915_private *dev_priv)
  *   - allocate initial config memory
  *   - setup the DRM framebuffer with the allocated memory
  */
+struct drm_i915_private *gpu_perf_dev_priv;
+
 int i915_driver_load(struct drm_device *dev, unsigned long flags)
 {
 	struct drm_i915_private *dev_priv;
 	struct intel_device_info *info;
-	int ret = 0, mmio_bar, mmio_size;
+	int ret = 0, mmio_bar;
 	uint32_t aperture_size;
 
 	info = (struct intel_device_info *) flags;
@@ -1495,6 +1497,7 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 		return -ENOMEM;
 
 	dev->dev_private = (void *)dev_priv;
+	gpu_perf_dev_priv = (void *)dev_priv;
 	dev_priv->dev = dev;
 	dev_priv->info = info;
 
@@ -1534,11 +1537,11 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 	 * generations up to Ironlake.
 	 */
 	if (info->gen < 5)
-		mmio_size = 512*1024;
+		dev_priv->mmio_size = 512*1024;
 	else
-		mmio_size = 2*1024*1024;
+		dev_priv->mmio_size = 2*1024*1024;
 
-	dev_priv->regs = pci_iomap(dev->pdev, mmio_bar, mmio_size);
+	dev_priv->regs = pci_iomap(dev->pdev, mmio_bar, dev_priv->mmio_size);
 	if (!dev_priv->regs) {
 		DRM_ERROR("failed to map registers\n");
 		ret = -EIO;
@@ -1609,6 +1612,13 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 		goto out_mtrrfree;
 	}
 
+#ifdef DRM_I915_VGT_SUPPORT
+	i915_check_vgt(dev);
+
+	if (dev_priv->in_xen_vgt == true)
+		i915_enable_fbc = 0;
+#endif
+
 	intel_irq_init(dev);
 	intel_uncore_sanitize(dev);
 
@@ -1656,6 +1666,18 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 	} else {
 		/* Start out suspended in ums mode. */
 		dev_priv->ums.mm_suspended = 1;
+
+#ifdef DRM_I915_VGT_SUPPORT
+		if (dev_priv->in_xen_vgt == true) {
+			/*
+			 * Tell VGT that we have a valid surface to show
+			 * after modesetting. We doesn't distinguish DOM0 and
+			 * Linux guest here, The PVINFO write handler will
+			 * handle this.
+			 */
+			I915_WRITE(vgt_info_off(display_ready), 1);
+		}
+#endif
 	}
 
 	i915_setup_sysfs(dev);

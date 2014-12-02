@@ -34,7 +34,13 @@ obj-y				+= amba/
 obj-$(CONFIG_DMADEVICES)	+= dma/
 
 obj-$(CONFIG_VIRTIO)		+= virtio/
-obj-$(CONFIG_XEN)		+= xen/
+ifeq ($(CONFIG_XEN),y)
+	obj-y		+= xen/
+endif
+ifeq ($(CONFIG_I915_VGT),y)
+	obj-y		+= xen/vgt/
+endif
+
 
 # regulators early, since some subsystems rely on them to initialize
 obj-$(CONFIG_REGULATOR)		+= regulator/

@@ -2217,3 +2217,37 @@ intel_ring_invalidate_all_caches(struct intel_ring_buffer *ring)
 	ring->gpu_caches_dirty = false;
 	return 0;
 }
+
+static bool is_rendering_engine_empty(struct drm_i915_private *dev_priv, int ring_id)
+{
+	static	int ring_mi_regs[3] = { 0x0209C, 0x1209C, 0x2209C };
+	u32	mi_mode;
+
+	mi_mode = I915_READ(ring_mi_regs[ring_id]);
+	if ( mi_mode & (1 << 9) )
+		return true;
+	else
+		return false;
+}
+
+extern struct drm_i915_private *gpu_perf_dev_priv;
+u64	i915_ring_0_idle = 0;
+u64	i915_ring_0_busy = 0;
+void gpu_perf_sample(void)
+{
+	struct drm_i915_private *dev_priv = gpu_perf_dev_priv;
+	int	ring_id = 0;
+	static  int count = 0;
+
+	if ( dev_priv ) {
+		if ( count ++ % 1000 == 0 )
+			printk("dev_priv->regs: %p\n", dev_priv->regs);
+		if ( spin_is_locked (&dev_priv->uncore.lock) )
+			return;
+		if ( is_rendering_engine_empty(dev_priv, ring_id) )
+			i915_ring_0_idle++;
+		else
+			i915_ring_0_busy++;
+	}
+}
+EXPORT_SYMBOL_GPL(gpu_perf_sample);

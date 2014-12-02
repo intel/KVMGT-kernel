@@ -303,6 +303,11 @@ unsigned cpu_from_irq(unsigned irq)
 	return info_for_irq(irq)->cpu;
 }
 
+int xen_get_cpu_from_irq(unsigned int irq)
+{
+       return cpu_from_irq(irq);
+}
+
 unsigned int cpu_from_evtchn(unsigned int evtchn)
 {
 	int irq = get_evtchn_to_irq(evtchn);
@@ -1716,3 +1721,5 @@ void __init xen_init_IRQ(void)
 	}
 #endif
 }
+EXPORT_SYMBOL(resend_irq_on_evtchn);
+EXPORT_SYMBOL(bind_virq_to_irq);

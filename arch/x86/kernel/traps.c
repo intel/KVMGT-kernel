@@ -263,11 +263,27 @@ dotraplinkage void do_double_fault(struct pt_regs *regs, long error_code)
 }
 #endif
 
+static int (*gp_prehandler)(struct pt_regs *regs, long error_code);
+int register_gp_prehandler(int (*handler)(struct pt_regs *regs, long error_code))
+{
+	if (gp_prehandler) {
+		printk(KERN_INFO "GP prehandler has been registered (0x%p)\n",
+				gp_prehandler);
+		return -EBUSY;
+	}
+
+	gp_prehandler = handler;
+	return 0;
+}
+
 dotraplinkage void __kprobes
 do_general_protection(struct pt_regs *regs, long error_code)
 {
 	struct task_struct *tsk;
 	enum ctx_state prev_state;
+
+	if (gp_prehandler && gp_prehandler(regs, error_code))
+		return;
 
 	prev_state = exception_enter();
 	conditional_sti(regs);

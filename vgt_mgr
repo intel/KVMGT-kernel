@@ -1,0 +1,199 @@
+#!/bin/bash
+
+connector_lookup() {
+	lookup_return=unknown
+	if [ x"$1" == x"${connector_count[1]}" ]; then
+		lookup_return=PORT_B
+	elif [ x"$1" == x"${connector_count[2]}" ]; then
+		lookup_return=PORT_C
+	elif [ x"$1" == x"${connector_count[3]}" ]; then
+		lookup_return=PORT_D
+	fi
+}
+
+get_port_name() {
+	port_name=unknown
+	check_connector_table=0
+	if [ x"$1" == x"card0-eDP-1" ]; then
+		port_name=PORT_A
+	elif [ x"$1" == x"card0-VGA-1" ]; then
+		port_name=PORT_E
+	elif [ x"$1" == x"card0-DP-1" ]; then
+		check_connector_table=1
+	elif [ x"$1" == x"card0-DP-2" ]; then
+		check_connector_table=1
+	elif [ x"$1" == x"card0-DP-3" ]; then
+		check_connector_table=1
+	elif [ x"$1" == x"card0-HDMI-A-1" ]; then
+		check_connector_table=1
+	elif [ x"$1" == x"card0-HDMI-A-2" ]; then
+		check_connector_table=1
+	elif [ x"$1" == x"card0-HDMI-A-3" ]; then
+		check_connector_table=1
+	fi
+
+	if [ x"$check_connector_table" == x"1" ]; then
+		last_index=$((${#1}-1))
+		connector_lookup ${1:$last_index:1}
+		port_name=$lookup_return
+	fi
+}
+
+get_drm_name () {
+	drm_name=unknown
+	if [ x"$1" == x"PORT_A" ] && [ x"$2" == x"eDP" ] && [ x"${connector_count[0]}" != x"0" ]; then
+		drm_name=card0-eDP-1
+	elif [ x"$1" == x"PORT_B" ] && [ x"$2" == x"DP" ] && [ x"${connector_count[1]}" != x"0" ]; then
+		drm_name=card0-DP-${connector_count[1]}
+	elif [ x"$1" == x"PORT_B" ] && [ x"$2" == x"HDMI" ] && [ x"${connector_count[1]}" != x"0" ]; then
+		drm_name=card0-HDMI-A-${connector_count[1]}
+	elif [ x"$1" == x"PORT_C" ] && [ x"$2" == x"DP" ] && [ x"${connector_count[2]}" != x"0" ]; then
+		drm_name=card0-DP-${connector_count[2]}
+	elif [ x"$1" == x"PORT_C" ] && [ x"$2" == x"HDMI" ] && [ x"${connector_count[2]}" != x"0" ]; then
+		drm_name=card0-HDMI-A-${connector_count[2]}
+	elif [ x"$1" == x"PORT_D" ] && [ x"$2" == x"DP" ] && [ x"${connector_count[3]}" != x"0" ]; then
+		drm_name=card0-DP-${connector_count[3]}
+	elif [ x"$1" == x"PORT_D" ] && [ x"$2" == x"HDMI" ] && [ x"${connector_count[3]}" != x"0" ]; then
+		drm_name=card0-HDMI-A-${connector_count[3]}
+	elif [ x"$1" == x"PORT_E" ] && [ x"$2" == x"VGA" ] && [ x"${connector_count[4]}" != x"0" ]; then
+		drm_name=card0-VGA-1
+	fi
+}
+
+count=0
+
+connector_count[0]=1
+connector_count[1]=0
+connector_count[2]=0
+connector_count[3]=0
+connector_count[4]=1
+
+vgt_dir=/sys/kernel/vgt
+
+if [ x"`cat $vgt_dir/control/PORT_B/presence`" == x"present" ]; then
+	count=`expr $count + 1`
+	connector_count[1]=$count
+fi
+
+if [ x"`cat $vgt_dir/control/PORT_C/presence`" == x"present" ]; then
+	count=`expr $count + 1`
+	connector_count[2]=$count
+fi
+
+if [ x"`cat $vgt_dir/control/PORT_D/presence`" == x"present" ]; then
+	count=`expr $count + 1`
+	connector_count[3]=$count
+fi
+
+#######################################################################
+############################ --help ###################################
+#######################################################################
+if [ x"$1" == x"--help" ]; then
+	echo Usage: vgt_mgr --command param1 param2
+	exit 0
+fi
+
+
+#######################################################################
+############################ --version ################################
+#######################################################################
+if [ x"$1" == x"--version" ]; then
+	echo 1.0
+	exit 0
+fi
+
+
+#######################################################################
+############################ --get port name ##########################
+#######################################################################
+if [ x"$1" == x"--get-port-name" ]; then
+	get_port_name $2
+	echo $port_name
+	exit 0
+fi
+
+
+#######################################################################
+############################ --get drm name ###########################
+#######################################################################
+if [ x"$1" == x"--get-drm-name" ]; then
+	get_drm_name $2 $3
+	echo $drm_name
+	exit 0
+fi
+
+
+#######################################################################
+############################ --detect display #########################
+#######################################################################
+
+if [ x"$1" == x"--detect-display" ]; then
+	check_src2=0
+	type=0
+	connect=0
+	filelist=`ls $vgt_dir`
+	for guest in $filelist
+	do
+		if [ x"${guest:0:2}" != x"vm" ]; then
+			continue
+		fi
+
+		if [ x"$2" == x"PORT_A" ]; then
+			src1=/sys/class/drm/card0-eDP-1
+			target=$vgt_dir/$guest/PORT_A
+			type=1
+		elif [ x"$2" == x"PORT_B" ]; then
+			get_drm_name $2 DP
+			src1=/sys/class/drm/$drm_name
+			get_drm_name $2 HDMI
+			src2=/sys/class/drm/$drm_name
+			target=$vgt_dir/$guest/PORT_B
+			check_src2=1
+			type=2
+		elif [ x"$2" == x"PORT_C" ]; then
+			get_drm_name $2 DP
+			src1=/sys/class/drm/$drm_name
+			get_drm_name $2 HDMI
+			src2=/sys/class/drm/$drm_name
+			target=$vgt_dir/$guest/PORT_C
+			check_src2=1
+			type=3
+		elif [ x"$2" == x"PORT_D" ]; then
+			get_drm_name $2 DP
+			src1=/sys/class/drm/$drm_name
+			get_drm_name $2 HDMI
+			src2=/sys/class/drm/$drm_name
+			target=$vgt_dir/$guest/PORT_D
+			check_src2=1
+			type=4
+		elif [ x"$2" == x"PORT_E" ]; then
+			src1=/sys/class/drm/card0-VGA-1
+			target=$vgt_dir/$guest/PORT_E
+			type=0
+		fi
+
+		if [ ! -d $target ]; then
+			continue
+		fi
+
+		if [ -d $src1 ] && [ `cat $src1/status` == "connected" ]; then
+			dd if=$src1/edid of=$target/edid bs=128 count=1
+			echo $type > $target/type
+			connect=1
+		fi
+
+		if [ -d $src2 ] && [ $check_src2 -eq 1 ] && [ `cat $src2/status` == "connected" ]; then
+			dd if=$src2/edid of=$target/edid bs=128 count=1
+			type=`expr $type + 3`
+			echo $type > $target/type
+			connect=1
+		fi
+
+		if [ $connect -eq 1 ]; then
+			echo "connect" > $target/connection
+		else
+			echo "disconnect" > $target/connection
+		fi
+	done
+	exit 0
+fi

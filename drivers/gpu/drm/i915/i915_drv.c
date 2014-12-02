@@ -53,6 +53,13 @@ MODULE_PARM_DESC(panel_ignore_lid,
 		"Override lid status (0=autodetect, 1=autodetect disabled [default], "
 		"-1=force lid closed, -2=force lid open)");
 
+bool i915_host_mediate __read_mostly = false;
+
+unsigned int i915_raw_mmio __read_mostly = 0;
+module_param_named(raw_mmio, i915_raw_mmio, int, 0600);
+MODULE_PARM_DESC(raw_mmio,
+		"Enable powersavings, fbc, downclocking, etc. (default: true)");
+
 unsigned int i915_powersave __read_mostly = 1;
 module_param_named(powersave, i915_powersave, int, 0600);
 MODULE_PARM_DESC(powersave,
@@ -117,6 +124,11 @@ int i915_enable_ppgtt __read_mostly = -1;
 module_param_named(i915_enable_ppgtt, i915_enable_ppgtt, int, 0400);
 MODULE_PARM_DESC(i915_enable_ppgtt,
 		"Enable PPGTT (default: true)");
+
+bool i915_ctx_switch __read_mostly = true;
+module_param_named(ctx_switch, i915_ctx_switch, bool, 0600);
+MODULE_PARM_DESC(ctx_switch,
+                "Enable HW context switch (default: true)");
 
 int i915_enable_psr __read_mostly = 0;
 module_param_named(enable_psr, i915_enable_psr, int, 0600);
@@ -404,6 +416,8 @@ void intel_detect_pch(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct pci_dev *pch = NULL;
+
+	printk("i915: intel_detect_pch\n");
 
 	/* In all current cases, num_pipes is equivalent to the PCH_NOP setting
 	 * (which really amounts to a PCH but no South Display).
@@ -713,6 +727,14 @@ int i915_resume(struct drm_device *dev)
 
 	pci_set_master(dev->pdev);
 
+#ifdef CONFIG_I915_VGT
+	if (i915_host_mediate) {
+		int error = vgt_resume(dev->pdev);
+		if (error)
+			return error;
+	}
+#endif
+
 	/*
 	 * Platforms with opregion should have sane BIOS, older ones (gen3 and
 	 * earlier) need to restore the GTT mappings since the BIOS might clear
@@ -831,6 +853,14 @@ static int i915_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	driver.driver_features &= ~(DRIVER_USE_AGP);
 
+#ifdef CONFIG_I915_VGT
+	/* enforce dependancy and initialize the vGT driver */
+	if (i915_start_vgt(pdev) == 0) {
+		printk("i915: xen_start_vgt done\n");
+		i915_host_mediate = true;
+	}
+#endif
+
 	return drm_get_pci_dev(pdev, ent, &driver);
 }
 
@@ -859,6 +889,14 @@ static int i915_pm_suspend(struct device *dev)
 	error = i915_drm_freeze(drm_dev);
 	if (error)
 		return error;
+
+#ifdef CONFIG_I915_VGT
+	if (i915_host_mediate) {
+		error = vgt_suspend(pdev);
+		if (error)
+			return error;
+	}
+#endif
 
 	pci_disable_device(pdev);
 	pci_set_power_state(pdev, PCI_D3hot);
