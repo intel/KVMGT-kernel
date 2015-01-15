@@ -44,7 +44,10 @@ void i915_isr_wrapper(struct irq_work *work)
 {
 	struct drm_i915_private *dev_priv = container_of(work,
 				struct drm_i915_private, irq_work);
+
+	spin_lock(&dev_priv->irq_serial_lock);
 	dev_priv->host_isr(drm_dev_to_irq(dev_priv->dev), dev_priv->dev);
+	spin_unlock(&dev_priv->irq_serial_lock);
 }
 
 void i915_isr_schedule(struct drm_device *dev)
@@ -3973,6 +3976,7 @@ void intel_irq_init(struct drm_device *dev)
 		}
 
 		init_irq_work(&dev_priv->irq_work, i915_isr_wrapper);
+		spin_lock_init(&dev_priv->irq_serial_lock);
 
 		dev_priv->irq_uninstall = dev->driver->irq_uninstall;
 		dev->driver->irq_uninstall = vgt_irq_uninstall;

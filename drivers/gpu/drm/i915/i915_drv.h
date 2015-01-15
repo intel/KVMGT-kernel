@@ -1570,6 +1570,7 @@ typedef struct drm_i915_private {
 	irqreturn_t (*host_isr)(int irq, void *arg);
 	void *pgt;
 	struct irq_work irq_work;
+	spinlock_t irq_serial_lock;
 	void (*irq_uninstall) (struct drm_device *dev);
 } drm_i915_private_t;
 
