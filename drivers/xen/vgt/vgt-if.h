@@ -233,7 +233,7 @@ static inline void vgt_exit(int cpu)
 #define XEN_IGD_MAX     3   /* the max GEN dev type supported */
 
 /* from "include/xen/interface/xen.h" */
-typedef uint16_t domid_t;
+/*typedef uint16_t domid_t;*/
 
 static inline bool kvm_guest_domain(void)
 {
